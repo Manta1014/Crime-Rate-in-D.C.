@@ -1,0 +1,616 @@
+---
+title: "Crime Rate in D.C."
+author: "Wonjune Lee, Jinuk Seo"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(zoo)
+library(lubridate)
+library(scales)
+library(ggforce)
+library(sf)
+library(reshape2)
+library(tidyr)
+library(tidyverse)
+library(viridis)
+library(ggspatial)
+library(cartogram)
+library(stringr)
+library(leaflet)
+library(RColorBrewer)
+library(png)
+library(grid)
+```
+
+```{r}
+df <- read_csv("dc-crimes-search-results.csv")
+
+names(df) <- make.names(names(df))
+
+df <- df %>%
+  mutate(offense_grouped = case_when(
+    offense.text %in% c("theft f/auto", "theft/other", "motor vehicle theft") ~ "theft",
+    TRUE ~ offense.text
+  ))
+
+df$YEAR <- as.numeric(df$YEAR)
+
+df$offense_grouped <- factor(df$offense_grouped)
+
+df_filtered <- df %>%
+  filter(YEAR >= 2020 & YEAR <= 2024)
+
+df_summary <- df_filtered %>%
+  group_by(YEAR, offense_grouped) %>%
+  summarise(incidents = n(), .groups = "drop")
+
+df_summary <- df_summary %>%
+  mutate(color_group = ifelse(offense_grouped == "theft", "theft", "other"))
+
+ggplot(df_summary, aes(x = YEAR, y = incidents, group = offense_grouped)) +
+  geom_line(aes(color = color_group), size = 1.2) +
+  geom_point(aes(color = color_group), size = 2.5) +
+  scale_color_manual(
+    values = c("theft" = "lightcoral", "other" = "gray70"),
+    labels = c("theft" = "Theft", "other" = "Other")
+  ) +
+  scale_x_continuous(breaks = 2020:2024) +
+  labs(
+    title = "Yearly Crime Trends (2020~2024) in DC",
+    subtitle = "Theft highlighted in red, other crimes in gray",
+    x = "Year", y = "Number of Incidents", color = "Offense Type"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+This line graph was created using ggplot2, It visualizes yearly crime trends from 2020 to 2024. The data is grouped into two categories: “theft” (highlighted in red) and “other” crimes (shown in gray). It clearly shows that theft incidents are significantly higher than other types of crimes throughout all five years. In particular, there is a notable peak in theft cases in 2023. The steady and relatively low trend of other crimes contrasts with the fluctuation in theft, emphasizing the dominance and variability of theft-related offenses in the dataset.
+
+```{r}
+df_counts <- df_filtered %>%
+  group_by(offense_grouped) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(desc(count)) %>%
+  mutate(
+    offense_label = case_when(
+      offense_grouped == "assault w/dangerous weapon" ~ "assault w/\ndangerous weapon",
+      TRUE ~ offense_grouped
+    ),
+    color_group = ifelse(offense_grouped == "theft", "highlight", "other")
+  )
+
+custom_color <- c("highlight" = "lightcoral", "other" = "gray80")
+
+ggplot(df_counts, aes(x = reorder(offense_label, count), y = count, fill = color_group)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = custom_color) +
+  coord_flip() +
+  labs(title = "Bar Chart by Offense",
+       subtitle = "2020~2024 Total Counts",
+       x = NULL, y = "Number of Incidents") +
+  theme_minimal(base_size = 14)
+```
+
+This horizontal bar chart shows the total number of incidents by offense type from 2020 to 2024. The chart uses light coral to highlight theft, while all other crimes are shown in gray. The graph makes it immediately clear that theft overwhelmingly dominates all other crime categories, with over 120,000 incidents. Offenses like robbery, assault, and burglary appear much lower in comparison. This visual strongly emphasizes that theft is the most frequent and persistent crime in during 2020 to 2024 period.
+
+```{r}
+df <- df %>%
+  mutate(START_DATE = mdy_hms(START_DATE),
+         year_month = floor_date(START_DATE, "month"))
+
+monthly_theft <- df %>%
+  filter(offense_grouped == "theft" & YEAR >= 2020 & YEAR <= 2024) %>%
+  count(year_month, name = "crime_count")
+
+weather <- read_csv("dc_weather.csv")
+
+weather <- weather %>%
+  mutate(datetime = ymd(datetime),
+         year_month = floor_date(datetime, "month")) %>%
+  filter(year(year_month) >= 2020 & year(year_month) <= 2024)
+
+monthly_temp <- weather %>%
+  group_by(year_month) %>%
+  summarise(avg_temp = mean(temp, na.rm = TRUE), .groups = "drop")
+
+merged <- left_join(monthly_theft, monthly_temp, by = "year_month")
+
+merged$year_month <- as.Date(merged$year_month)
+
+ggplot(merged, aes(x = year_month)) +
+  geom_line(aes(y = rollmean(crime_count, k = 6, fill = NA), color = "Theft Crimes"), linewidth = 1.2) +
+  geom_line(aes(y = avg_temp * 60, color = "Temperature"), linewidth = 1) +
+  scale_y_continuous(
+    name = "Number of Theft Crimes",
+    sec.axis = sec_axis(~./60, name = "Temperature (°C)")
+  ) +
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels = "%Y",
+    limits = as.Date(c("2020-07-15", "2024-07-31"))
+  ) +
+  scale_color_manual(values = c("Theft Crimes" = "skyblue", "Temperature" = "lightcoral")) +
+  labs(title = "Monthly Theft vs Temperature (2020~2024)",
+       x = "Date", color = "") +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title.y = element_text(color = "skyblue"),
+    axis.title.y.right = element_text(color = "lightcoral"),
+    legend.position = "right"
+  )
+```
+
+Dual-axis line graph visualizes the relationship between monthly theft crimes (in sky blue) and average temperature (in light coral) from 2020 to 2024 in DC. The graph shows that theft incidents tend to follow the temperature. This repeating seasonal pattern suggests a positive correlation between temperature and theft activity, with crime rates peak in hotter periods and dipping during colder periods. By combining crime and weather data, this plot offers insight into how environmental factors may influence criminal behavior.
+
+```{r}
+img <- readPNG("2023crime.png")
+grid.raster(img)
+```
+
+https://www.washingtonpost.com/dc-md-va/interactive/2024/dc-crime-homicide-victims-shooting-violence/
+
+This shows why crime rate increases after 2022 winter.
+
+```{r}
+df <- df %>%
+  mutate(
+    START_DATE = parse_date_time(START_DATE, orders = c("mdy HMS p", "mdy HM p", "mdy HM", "ymd HMS", "ymd HM")),
+    hour = hour(START_DATE),
+    hour_group = floor(hour / 3) * 3
+  ) %>%
+  filter(!is.na(hour_group))
+
+df_theft <- df %>% filter(offense_grouped == "theft")
+
+time_summary <- df_theft %>%
+  group_by(hour_group) %>%
+  summarise(count = n(), .groups = "drop")
+
+qtiles <- quantile(time_summary$count, probs = c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE)
+
+if (length(unique(qtiles)) < 5) {
+  breaks_fixed <- seq(min(time_summary$count), max(time_summary$count), length.out = 5)
+} else {
+  breaks_fixed <- qtiles
+}
+
+labels_count <- c("Low", "Medium", "High", "Very High")
+
+fill_levels <- cut(time_summary$count,
+                   breaks = breaks_fixed,
+                   labels = labels_count,
+                   include.lowest = TRUE)
+
+custom_colors <- c("Low" = "#b2df8a", "Medium" = "#fdbf6f",
+                   "High" = "#ff7f00","Very High" = "#e31a1c")
+
+time_summary <- time_summary %>%
+  mutate(
+    angle = 90 - (hour_group / 24 * 360),
+    label = paste0(sprintf("%02d", hour_group), "~", sprintf("%02d", (hour_group + 3) %% 24)),
+    fill_color = fill_levels
+  )
+
+peak <- time_summary[which.max(time_summary$count), ]
+mini <- time_summary[which.min(time_summary$count), ]
+
+peak <- peak %>% mutate(label_arrow = "Max")
+mini <- mini %>% mutate(label_arrow = "Min")
+
+plate <- data.frame(hour_group = factor(seq(0, 21, by = 3)),count = max(time_summary$count) + 400)
+
+ggplot(time_summary, aes(x = factor(hour_group), y = count, fill = fill_color)) +
+  geom_bar(data = plate, aes(x = hour_group, y = count),
+           stat = "identity", width = 1,
+           fill = "gray95", color = "black", size = 0.5, alpha = 0.6,
+           inherit.aes = FALSE) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar(start = 0, direction = 1) +
+  scale_fill_manual(values = custom_colors) +
+  geom_segment(data = peak,
+               aes(x = factor(hour_group), xend = factor(hour_group),
+                   y = 0, yend = max(count) * 0.8),
+               inherit.aes = FALSE,
+               linewidth = 0.7, color = "black",
+               arrow = arrow(length = unit(10, "pt"), type = "closed")) +
+  geom_segment(data = mini,
+               aes(x = factor(hour_group), xend = factor(hour_group),
+                   y = 0, yend = max(count) * 1.0),
+               inherit.aes = FALSE,
+               linewidth = 0.7, color = "black",
+               arrow = arrow(length = unit(10, "pt"), type = "closed")) +
+  geom_text(aes(label = label, y = max(count) + 6000), size = 4, vjust = 0.5) +
+  theme_void() +
+  labs(title = "3-Hour Interval Theft Clock (2020~2024)",
+       fill = "Theft Frequency Level") +
+  geom_text(data = peak,
+            aes(x = factor(hour_group), y = max(count) * 0.9, label = label_arrow),
+            inherit.aes = FALSE,
+            size = 4, fontface = "bold", vjust = -0.5) +
+  geom_text(data = mini,
+            aes(x = factor(hour_group), y = max(count) * 1.3, label = label_arrow),
+            inherit.aes = FALSE,
+            size = 4, fontface = "bold", vjust = -0.5)
+```
+
+This circular plot, created using the ggclock package, This plot shows theft frequencies by 3-hour intervals throughout the day. The plot is designed like a clock, where each colored wedge represents a 3-hour time block. The long black arrow (minute hand) points to the time with the highest number of thefts (15–18), categorized as "Very High" in red. The shorter arrow (hour hand) indicates the least risky time (03–06), shown in green as "Low". This visualization makes it clear that afternoons between 3–6 PM are the most dangerous, while early morning hours are the safest in terms of theft activity.
+
+
+```{r}
+tracts <- st_read("ACS_5-Year_Demographic_Characteristics_DC_Census_Tract.shp")
+
+crimes <- read_csv("dc-crimes-search-results.csv") %>%
+  rename(offense_text = `offense-text`) %>%
+  filter(!is.na(LATITUDE) & !is.na(LONGITUDE)) %>%
+  st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = 4326) %>%
+  st_transform(st_crs(tracts)) %>%
+  filter(offense_text %in% c("theft f/auto", "theft/other", "motor vehicle theft"))
+
+alcohol <- st_read("Alcohol_License_Business_Locations.shp") %>%
+  st_transform(st_crs(tracts))
+
+homeless <- st_read("Homeless_Service_Facilities.shp") %>%
+  st_transform(st_crs(tracts))
+
+theft_count <- st_join(tracts, crimes) %>%
+  st_drop_geometry() %>%
+  count(GEOID, name = "theft_count")
+
+alcohol_count <- st_join(tracts, alcohol) %>%
+  st_drop_geometry() %>%
+  count(GEOID, name = "alcohol_count")
+
+homeless_count <- st_join(tracts, homeless) %>%
+  st_drop_geometry() %>%
+  count(GEOID, name = "homeless_count")
+
+tract_counts <- tracts %>%
+  st_drop_geometry() %>%
+  select(GEOID) %>%
+  left_join(theft_count, by = "GEOID") %>%
+  left_join(alcohol_count, by = "GEOID") %>%
+  left_join(homeless_count, by = "GEOID") %>%
+  mutate(across(ends_with("_count"), ~ replace_na(., 0)))
+
+cor_matrix <- tract_counts %>%
+  select(theft_count, homeless_count, alcohol_count) %>%
+  cor(use = "pairwise.complete.obs")
+
+vars <- tract_counts %>%
+  select(theft_count, homeless_count, alcohol_count)
+
+p_matrix <- matrix(NA, ncol = ncol(vars), nrow = ncol(vars))
+colnames(p_matrix) <- rownames(p_matrix) <- colnames(vars)
+
+for (i in 1:ncol(vars)) {
+  for (j in 1:ncol(vars)) {
+    test <- cor.test(vars[[i]], vars[[j]], method = "pearson")
+    p_matrix[i, j] <- test$p.value
+  }
+}
+
+reorder_vars <- rev(colnames(cor_matrix))
+cor_matrix_reordered <- cor_matrix[reorder_vars, reorder_vars]
+
+cor_long <- melt(cor_matrix_reordered)
+p_long <- melt(p_matrix)
+
+cor_long$Var1 <- factor(cor_long$Var1, levels = rev(colnames(cor_matrix_reordered)))
+cor_long$Var2 <- factor(cor_long$Var2, levels = colnames(cor_matrix_reordered))
+p_long$Var1 <- factor(p_long$Var1, levels = rev(colnames(p_matrix)))
+p_long$Var2 <- factor(p_long$Var2, levels = colnames(p_matrix))
+
+merged <- cor_long %>%
+  rename(cor_value = value) %>%
+  left_join(p_long %>% rename(p_value = value), by = c("Var1", "Var2"))
+
+merged <- merged %>%
+  mutate(
+    sig = case_when(
+      p_value < 0.01 ~ "***",
+      p_value < 0.05 ~ "**",
+      TRUE ~ ""
+    ),
+    row = as.integer(Var1) - 1,
+    col = as.integer(Var2) - 1,
+    label = case_when(
+      (row == 0 & col == 0) | (row == 0 & col == 1) | (row == 1 & col == 0) ~ 
+        paste0(sprintf("%.2f", cor_value), " ", sig, "\n(p_value=\n", signif(p_value, 2), ")"),
+      TRUE ~ ""
+    ))
+
+ggplot(merged, aes(x = Var2, y = Var1, fill = cor_value)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = label), size = 5) +
+  scale_fill_gradient2(
+    low = "#b2182b", mid = "white", high = "#2166ac",
+    midpoint = 0, limit = c(-1, 1), name = "Correlation"
+  ) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Correlation Matrix with P-values",
+       x = NULL, y = NULL) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+This correlation heatmap shows the relationship between three variables: alcohol business count, homeless facility count, and theft incident count. Each tile represents the Pearson correlation coefficient between two variables, with corresponding p-values included to assess statistical significance.
+
+Key Relationships:
+
+Theft vs Alcohol Count
+
+Correlation: 0.71
+
+p-value: 3.6e-33
+
+➤ This shows a strong positive correlation between theft and the number of alcohol-related facilities. The extremely low p-value indicates this result is highly statistically significant.
+
+Theft vs Homeless Count
+
+Correlation: 0.36
+
+p-value: 8.5e-08
+
+➤ This indicates a moderate positive correlation. The p-value is much less than 0.05, so this relationship is also statistically significant.
+
+Homeless vs Alcohol Count
+
+Correlation: 0.22
+
+p-value: 0.0017
+
+➤ This is a weak to moderate positive correlation, but again, the p-value suggests it is statistically significant.
+
+Conclusion:
+Since all p-values are well below 0.05, you can confidently say that all three relationships are statistically significant. The strongest association is between theft and alcohol locations, which may suggest that areas with more alcohol-related businesses tend to experience more thefts.
+
+
+```{r}
+hl <- read_sf("Homeless_Service_Facilities.shp") %>%
+  st_transform(crs = 4326)
+
+dc <- read_sf("ACS_5-Year_Demographic_Characteristics_DC_Census_Tract.shp") %>%
+  st_transform(crs = 4326)
+
+crime <- read_csv("dc-crimes-search-results.csv")
+names(crime) <- make.names(names(crime))
+
+# 2. filter theft
+crime <- crime %>%
+  mutate(offense_grouped = case_when(
+    offense.text %in% c("theft f/auto", "theft/other", "motor vehicle theft") ~ "theft",
+    TRUE ~ offense.text
+  )) %>%
+  filter(YEAR >= 2020 & YEAR <= 2024,
+         offense_grouped == "theft",
+         !is.na(LATITUDE), !is.na(LONGITUDE))
+
+# 3. transform to sf 
+crime_sf <- st_as_sf(crime, coords = c("LONGITUDE", "LATITUDE"), crs = 4326)
+
+# 4. create 500m buffer 
+hl_utm <- st_transform(hl, 32618)
+buffer_utm <- st_buffer(hl_utm, dist = 500)
+
+# 5. join 
+crime_utm <- st_transform(crime_sf, 32618)  
+sf::sf_use_s2(FALSE)  
+joined <- st_join(buffer_utm, crime_utm, join = st_contains)
+
+# 6. count theft in each buffer
+buffer_with_count <- joined %>%
+  st_drop_geometry() %>%
+  group_by(OBJECTID) %>%  #
+  summarise(theft_count = n(), .groups = "drop")
+
+# 7. add theft count
+buffer_final <- buffer_utm %>%
+  left_join(buffer_with_count, by = "OBJECTID") %>%
+  mutate(theft_count = ifelse(is.na(theft_count), 0, theft_count))
+
+# top 25
+top10_buffers <- buffer_final %>%
+  arrange(desc(theft_count)) %>%
+  slice(1:25) %>%
+  st_transform(4326)
+
+# bottom 25
+bottom10_buffers <- buffer_final %>%
+  filter(theft_count > 0) %>%
+  arrange(theft_count) %>%
+  slice(1:25) %>%
+  st_transform(4326)
+
+# add 
+both_buffers <- rbind(top10_buffers, bottom10_buffers)
+
+# create center point
+top10_points <- hl %>%
+  filter(OBJECTID %in% top10_buffers$OBJECTID)
+
+bottom10_points <- hl %>%
+  filter(OBJECTID %in% bottom10_buffers$OBJECTID)
+
+facility_points <- rbind(top10_points, bottom10_points)
+
+pal <- colorBin(
+  palette = "YlOrBr",
+  domain = both_buffers$theft_count,
+  bins = c(0, 1000, 2000, 3000, 4000, 5000, 5364),
+  pretty = FALSE
+)
+
+# leaflet 
+leaflet() %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addMiniMap(toggleDisplay = TRUE) %>%
+  addControl("<strong>Top 25 and Bottom 25 Homeless Facilities by Theft Count (500m Buffer) (2020~2024)</strong>", position = "topright") %>%
+  
+  # buffer 
+  addPolygons(data = both_buffers,
+              fillColor = ~pal(theft_count),
+              color = "black",
+              weight = 1,
+              opacity = 1,
+              fillOpacity = 0.6,
+              popup = ~paste0("<strong>Facility:</strong> ", PROGRAM_NA,
+                              "<br><strong>Theft Count:</strong> ", theft_count)) %>%
+  
+  addCircleMarkers(data = facility_points,
+                   radius = 4,
+                   color = "white",
+                   weight = 1,
+                   fillColor = "black",
+                   fillOpacity = 0.5,
+                   popup = ~paste0("<strong>Facility:</strong> ", PROGRAM_NA)) %>%
+  
+  addLegend("bottomright",
+            pal = pal,
+            values = both_buffers$theft_count,
+            title = "Theft Count",
+            opacity = 0.7)
+
+### Alcohol buffer
+
+alcohol <- read_sf("Alcohol_License_Business_Locations.shp") %>%
+  st_transform(crs = 4326)
+
+# 3. creat buffer
+alcohol_utm <- st_transform(alcohol, 32618)
+alcohol_buffer <- st_buffer(alcohol_utm, dist = 500)
+
+# 4. spatial join
+crime_utm <- st_transform(crime_sf, 32618)
+sf::sf_use_s2(FALSE)  
+
+alcohol_joined <- st_join(alcohol_buffer, crime_utm, join = st_contains)
+
+# 5. count theft
+alcohol_count <- alcohol_joined %>%
+  st_drop_geometry() %>%
+  group_by(LICENSE) %>%  
+  summarise(theft_count = n(), .groups = "drop")
+
+# 6. join previous alcohol
+alcohol_final <- alcohol_buffer %>%
+  left_join(alcohol_count, by = "LICENSE") %>%
+  mutate(theft_count = ifelse(is.na(theft_count), 0, theft_count))
+
+# 7. Top 25
+alcohol_top10 <- alcohol_final %>%
+  arrange(desc(theft_count)) %>%
+  slice(1:25) %>%
+  st_transform(4326)
+
+# bottom 25
+alcohol_bottom10 <- alcohol_final %>%
+  filter(theft_count > 0) %>%
+  arrange(theft_count) %>%
+  slice(1:25) %>%
+  st_transform(4326)
+
+# combine
+both_alcohol <- rbind(alcohol_top10, alcohol_bottom10)
+
+# create center point
+alcohol_top10_points <- alcohol %>%
+  filter(LICENSE %in% alcohol_top10$LICENSE)
+
+alcohol_bottom10_points <- alcohol %>%
+  filter(LICENSE %in% alcohol_bottom10$LICENSE)
+
+
+# combine points
+alcohol_facility_points <- rbind(alcohol_top10_points, alcohol_bottom10_points)
+
+# color
+pal <- colorBin(
+  palette = "YlOrBr",
+  domain = both_alcohol$theft_count,
+  bins = c(0, 1000, 2000, 3000, 4000, 5000, 5713),
+  pretty = FALSE
+)
+
+# leaflet 
+leaflet() %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addMiniMap(toggleDisplay = TRUE) %>%
+  addControl("<strong>Top 25 and Bottom 25 Alcohol shops by Theft Count (500m Buffer) (2020~2024)</strong>", position = "topright") %>%
+  
+  # buffer 
+  addPolygons(data = both_alcohol,
+              fillColor = ~pal(theft_count),
+              color = "black",
+              weight = 1,
+              opacity = 1,
+              fillOpacity = 0.3,
+              popup = ~paste0("<strong>Facility:</strong> ", TRADE_NAME,
+                              "<br><strong>Theft Count:</strong> ", theft_count)) %>%
+  
+  
+  addCircleMarkers(data = alcohol_facility_points,
+                   radius = 4,
+                   color = "white",
+                   weight = 1,
+                   fillColor = "black",
+                   fillOpacity = 0.5,
+                   popup = ~paste0("<strong>Facility:</strong> ", TRADE_NAME)) %>%
+  
+  
+  addLegend("bottomright",
+            pal = pal,
+            values = both_alcohol$theft_count,
+            title = "Theft Count",
+            opacity = 0.7)
+```
+
+Map Explanation & Analysis
+
+This set of interactive maps displays theft activity around homeless facilities and alcohol-related businesses in Washington, D.C., using 500-meter buffer zones. For each location, the total number of thefts that occurred within the buffer between 2020 and 2024 is visualized through color intensity:
+
+-Darker shades represent higher theft counts.
+-The legend on the right shows theft count ranges corresponding to the color.
+
+Homeless Facilities:
+
+The central downtown D.C. area shows the highest theft activity near homeless facilities.
+
+The facility with the highest theft count is Legal Assistance Project, with 5,364 incidents.
+
+Many facilities are located close to each other, causing their buffers to overlap, which highlights the area as a high-risk cluster.
+
+
+Alcohol-Related Businesses:
+
+The highest theft counts are concentrated in the U Street NW and 11th Street NW area.
+
+According to the Google Map, this area includes Mama San, a nightclub with the highest count of 5,713 thefts.
+
+This location is known for nightlife and includes popular venues like 930 Club, Flash, Black Cat, and Busboys and Poets—likely contributing to increased theft incidents in the area.
+
+
+Advantages of Buffer-Based Visualization:
+
+Clear Spatial Risk Detection
+→ Makes it easy to identify high-theft areas at a glance using visual clues .
+
+Combination of Quantitative and Spatial Analysis
+→ Shows the geographic distribution of theft along with the numeric scale of risk using color and location of the buffer.
+
+Limitations of Buffer Visualization:
+
+Overlapping Buffers
+→ In densely clustered areas, buffers overlap heavily, making it difficult to distinguish which location is responsible for the high theft count.
+
+Proximity Doesn’t Always Mean Causality
+→ Buffers are based on distance only. They don’t explain why theft occurs.
+Other factors like metro stations, public parks, or nightlife spots might also fall within the buffer.
+
+This visualization clearly highlights that homeless facilities in central D.C. and alcohol-related businesses in the U Street NW nightlife district are surrounded by high levels of theft incidents.
+The Legal Assistance Project and Mama San Nightclub are the most high-risk locations based on theft counts.
+
